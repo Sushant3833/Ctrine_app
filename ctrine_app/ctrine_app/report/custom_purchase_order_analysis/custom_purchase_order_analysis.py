@@ -117,7 +117,7 @@ def get_received_amount_data(data):
 
 	pr_items = frappe.get_all(
 		"Purchase Receipt Item",
-		fields=["purchase_order_item", "posting_date", "qty", "parent"],
+		fields=["purchase_order_item", "parent.posting_date as posting_date", "qty", "parent"],
 		filters={"docstatus": 1, "purchase_order_item": ["in", po_item_names]},
 		order_by="posting_date asc"
 	)
