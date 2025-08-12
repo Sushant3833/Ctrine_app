@@ -106,46 +106,67 @@ def update_received_amount(data):
 		row.received_qty_amount = flt(info.get("received_qty_amount", 0))
 		row.final_receipt_date = info.get("final_receipt_date")
 
-
 def get_received_amount_data(data):
-	pr = frappe.qb.DocType("Purchase Receipt")
-	pr_item = frappe.qb.DocType("Purchase Receipt Item")
+    from frappe.utils import flt, getdate
+    pr = frappe.qb.DocType("Purchase Receipt")
+    pr_item = frappe.qb.DocType("Purchase Receipt Item")
 
-	po_item_names = [row.name for row in data]
-	if not po_item_names:
-		return {}
+    po_item_names = [row.name for row in data]
+    if not po_item_names:
+        return {}
 
-	pr_items = frappe.get_all(
-		"Purchase Receipt Item",
-		fields=["purchase_order_item", "parent.posting_date as posting_date", "qty", "parent"],
-		filters={"docstatus": 1, "purchase_order_item": ["in", po_item_names]},
-		order_by="posting_date asc"
-	)
+    # Join PR Item -> PR to fetch parent's posting_date
+    pr_rows = (
+        frappe.qb.from_(pr_item)
+        .inner_join(pr)
+        .on(pr_item.parent == pr.name)
+        .select(
+            pr_item.purchase_order_item,
+            pr_item.qty,
+            pr_item.parent,
+            pr.posting_date,
+            pr_item.idx,
+        )
+        .where(
+            (pr_item.docstatus == 1)
+            & (pr_item.purchase_order_item.isin(po_item_names))
+        )
+        .orderby(pr.posting_date)      # earliest first
+        .orderby(pr_item.parent)
+        .orderby(pr_item.idx)
+    ).run(as_dict=True)
 
-	# Group them by PO Item and accumulate qty
-	received_data = {}
+    # Group PR-Items by PO Item
+    by_po_item = {}
+    for r in pr_rows:
+        by_po_item.setdefault(r["purchase_order_item"], []).append(r)
 
-	for row in data:
-		po_item_name = row.name
-		po_qty = flt(row.qty)
-		cumulative_qty = 0
-		final_receipt_date = None
-		receipt_entries = [pr for pr in pr_items if pr.purchase_order_item == po_item_name]
+    received_data = {}
+    for row in data:
+        po_item_name = row.name
+        po_qty = flt(row.qty)
+        amount = flt(row.amount)
 
-		for pr in receipt_entries:
-			cumulative_qty += flt(pr.qty)
-			if cumulative_qty >= po_qty:
-				final_receipt_date = getdate(pr.posting_date)
-				break
+        entries = by_po_item.get(po_item_name, [])
+        cumulative_qty = 0.0
+        final_receipt_date = None
 
-		total_received_amount = sum([flt(pr.qty) * flt(row.amount) / flt(row.qty) for pr in receipt_entries])
+        for r in entries:
+            cumulative_qty += flt(r["qty"])
+            if po_qty and cumulative_qty >= po_qty and not final_receipt_date:
+                final_receipt_date = getdate(r["posting_date"])
 
-		received_data[po_item_name] = {
-			"received_qty_amount": total_received_amount,
-			"final_receipt_date": final_receipt_date
-		}
+        # Amount received = sum(received qty * unit rate from PO item)
+        unit_rate = (amount / flt(row.qty)) if flt(row.qty) else 0.0
+        total_received_amount = sum(flt(r["qty"]) * unit_rate for r in entries)
 
-	return received_data
+        received_data[po_item_name] = {
+            "received_qty_amount": total_received_amount,
+            "final_receipt_date": final_receipt_date,
+        }
+
+    return received_data
+
 
 
 def prepare_data(data, filters):
