@@ -1,17 +1,11 @@
 # Copyright (c) 2025, sushant and contributors
 # For license information, please see license.txt
 
-# import frappe
-
 import copy
-
 import frappe
 from frappe import _
 from frappe.query_builder.functions import IfNull, Sum
-from frappe.utils import date_diff, flt, getdate
-from frappe.utils import nowdate
-from frappe.query_builder.functions import IfNull, Sum, Max
-
+from frappe.utils import date_diff, flt, getdate, nowdate
 
 
 def execute(filters=None):
@@ -55,7 +49,8 @@ def get_data(filters):
 		.on((pi_item.po_detail == po_item.name) & (pi_item.docstatus == 1))
 		.select(
 			po.transaction_date.as_("date"),
-			po_item.schedule_date.as_("required_date"),
+			po_item.schedule_date.as_("required_date"),  # schedule_date -> required_date
+			po_item.custom_lead_date_no,  # ✅ added field
 			po_item.project,
 			po.name.as_("purchase_order"),
 			po.status,
@@ -68,9 +63,7 @@ def get_data(filters):
 			Sum(IfNull(pi_item.qty, 0)).as_("billed_qty"),
 			po_item.base_amount.as_("amount"),
 			(po_item.billed_amt * IfNull(po.conversion_rate, 1)).as_("billed_amount"),
-			(po_item.base_amount - (po_item.billed_amt * IfNull(po.conversion_rate, 1))).as_(
-				"pending_amount"
-			),
+			(po_item.base_amount - (po_item.billed_amt * IfNull(po.conversion_rate, 1))).as_("pending_amount"),
 			po.set_warehouse.as_("warehouse"),
 			po.company,
 			po_item.name,
@@ -94,7 +87,6 @@ def get_data(filters):
 		query = query.where(po_item.project == filters.get("project"))
 
 	data = query.run(as_dict=True)
-
 	return data
 
 
@@ -106,67 +98,63 @@ def update_received_amount(data):
 		row.received_qty_amount = flt(info.get("received_qty_amount", 0))
 		row.final_receipt_date = info.get("final_receipt_date")
 
+
 def get_received_amount_data(data):
-    from frappe.utils import flt, getdate
-    pr = frappe.qb.DocType("Purchase Receipt")
-    pr_item = frappe.qb.DocType("Purchase Receipt Item")
+	pr = frappe.qb.DocType("Purchase Receipt")
+	pr_item = frappe.qb.DocType("Purchase Receipt Item")
 
-    po_item_names = [row.name for row in data]
-    if not po_item_names:
-        return {}
+	po_item_names = [row.name for row in data]
+	if not po_item_names:
+		return {}
 
-    # Join PR Item -> PR to fetch parent's posting_date
-    pr_rows = (
-        frappe.qb.from_(pr_item)
-        .inner_join(pr)
-        .on(pr_item.parent == pr.name)
-        .select(
-            pr_item.purchase_order_item,
-            pr_item.qty,
-            pr_item.parent,
-            pr.posting_date,
-            pr_item.idx,
-        )
-        .where(
-            (pr_item.docstatus == 1)
-            & (pr_item.purchase_order_item.isin(po_item_names))
-        )
-        .orderby(pr.posting_date)      # earliest first
-        .orderby(pr_item.parent)
-        .orderby(pr_item.idx)
-    ).run(as_dict=True)
+	pr_rows = (
+		frappe.qb.from_(pr_item)
+		.inner_join(pr)
+		.on(pr_item.parent == pr.name)
+		.select(
+			pr_item.purchase_order_item,
+			pr_item.qty,
+			pr_item.parent,
+			pr.posting_date,
+			pr_item.idx,
+		)
+		.where(
+			(pr_item.docstatus == 1)
+			& (pr_item.purchase_order_item.isin(po_item_names))
+		)
+		.orderby(pr.posting_date)
+		.orderby(pr_item.parent)
+		.orderby(pr_item.idx)
+	).run(as_dict=True)
 
-    # Group PR-Items by PO Item
-    by_po_item = {}
-    for r in pr_rows:
-        by_po_item.setdefault(r["purchase_order_item"], []).append(r)
+	by_po_item = {}
+	for r in pr_rows:
+		by_po_item.setdefault(r["purchase_order_item"], []).append(r)
 
-    received_data = {}
-    for row in data:
-        po_item_name = row.name
-        po_qty = flt(row.qty)
-        amount = flt(row.amount)
+	received_data = {}
+	for row in data:
+		po_item_name = row.name
+		po_qty = flt(row.qty)
+		amount = flt(row.amount)
 
-        entries = by_po_item.get(po_item_name, [])
-        cumulative_qty = 0.0
-        final_receipt_date = None
+		entries = by_po_item.get(po_item_name, [])
+		cumulative_qty = 0.0
+		final_receipt_date = None
 
-        for r in entries:
-            cumulative_qty += flt(r["qty"])
-            if po_qty and cumulative_qty >= po_qty and not final_receipt_date:
-                final_receipt_date = getdate(r["posting_date"])
+		for r in entries:
+			cumulative_qty += flt(r["qty"])
+			if po_qty and cumulative_qty >= po_qty and not final_receipt_date:
+				final_receipt_date = getdate(r["posting_date"])
 
-        # Amount received = sum(received qty * unit rate from PO item)
-        unit_rate = (amount / flt(row.qty)) if flt(row.qty) else 0.0
-        total_received_amount = sum(flt(r["qty"]) * unit_rate for r in entries)
+		unit_rate = (amount / flt(row.qty)) if flt(row.qty) else 0.0
+		total_received_amount = sum(flt(r["qty"]) * unit_rate for r in entries)
 
-        received_data[po_item_name] = {
-            "received_qty_amount": total_received_amount,
-            "final_receipt_date": final_receipt_date,
-        }
+		received_data[po_item_name] = {
+			"received_qty_amount": total_received_amount,
+			"final_receipt_date": final_receipt_date,
+		}
 
-    return received_data
-
+	return received_data
 
 
 def prepare_data(data, filters):
@@ -178,41 +166,35 @@ def prepare_data(data, filters):
 		purchase_order_map = {}
 
 	for row in data:
-		# sum data for chart
 		completed += row[completed_field]
 		pending += row[pending_field]
 
-		# prepare data for report view
 		row["qty_to_bill"] = flt(row["qty"]) - flt(row["billed_qty"])
 
 		required_date = getdate(row.get("required_date")) if row.get("required_date") else None
 		today = getdate(nowdate())
 		receipt_date = getdate(row.get("final_receipt_date")) if row.get("final_receipt_date") else None
 		pending_qty = flt(row.get("pending_qty", 0))
-		
+
 		delay = 0
 		if required_date:
 			if pending_qty > 0:
 				delay = date_diff(today, required_date)
 			elif receipt_date:
 				delay = date_diff(receipt_date, required_date)
-		
-		row["delay_in_days"] = delay if delay > 0 else 0
 
+		row["delay_in_days"] = delay if delay > 0 else 0
 
 		if filters.get("group_by_po"):
 			po_name = row["purchase_order"]
 
 			if po_name not in purchase_order_map:
-				# create an entry
 				row_copy = copy.deepcopy(row)
 				purchase_order_map[po_name] = row_copy
 			else:
-				# update existing entry
 				po_row = purchase_order_map[po_name]
 				po_row["required_date"] = min(getdate(po_row["required_date"]), getdate(row["required_date"]))
 
-				# sum numeric columns
 				fields = [
 					"qty",
 					"received_qty",
@@ -251,7 +233,8 @@ def prepare_chart_data(pending, completed):
 def get_columns(filters):
 	columns = [
 		{"label": _("Date"), "fieldname": "date", "fieldtype": "Date", "width": 90},
-		{"label": _("Required By"), "fieldname": "required_date", "fieldtype": "Date", "width": 90},
+		{"label": _("Lead Date"), "fieldname": "required_date", "fieldtype": "Date", "width": 90},
+		{"label": _("Lead Date No"), "fieldname": "custom_lead_date_no", "fieldtype": "Data", "width": 100},  # ✅ added column
 		{
 			"label": _("Purchase Order"),
 			"fieldname": "purchase_order",
@@ -287,51 +270,21 @@ def get_columns(filters):
 			}
 		)
 		columns.append(
-		{
-			"label": _("Item Name"),
-			"fieldname": "item_name",
-			"fieldtype": "Data",
-			"width": 180,
-		}
+			{
+				"label": _("Item Name"),
+				"fieldname": "item_name",
+				"fieldtype": "Data",
+				"width": 180,
+			}
 		)
 
 	columns.extend(
 		[
-			{
-				"label": _("Qty"),
-				"fieldname": "qty",
-				"fieldtype": "Float",
-				"width": 120,
-				"convertible": "qty",
-			},
-			{
-				"label": _("Received Qty"),
-				"fieldname": "received_qty",
-				"fieldtype": "Float",
-				"width": 120,
-				"convertible": "qty",
-			},
-			{
-				"label": _("Pending Qty"),
-				"fieldname": "pending_qty",
-				"fieldtype": "Float",
-				"width": 80,
-				"convertible": "qty",
-			},
-			{
-				"label": _("Billed Qty"),
-				"fieldname": "billed_qty",
-				"fieldtype": "Float",
-				"width": 80,
-				"convertible": "qty",
-			},
-			{
-				"label": _("Qty to Bill"),
-				"fieldname": "qty_to_bill",
-				"fieldtype": "Float",
-				"width": 80,
-				"convertible": "qty",
-			},
+			{"label": _("Qty"), "fieldname": "qty", "fieldtype": "Float", "width": 120, "convertible": "qty"},
+			{"label": _("Received Qty"), "fieldname": "received_qty", "fieldtype": "Float", "width": 120, "convertible": "qty"},
+			{"label": _("Pending Qty"), "fieldname": "pending_qty", "fieldtype": "Float", "width": 80, "convertible": "qty"},
+			{"label": _("Billed Qty"), "fieldname": "billed_qty", "fieldtype": "Float", "width": 80, "convertible": "qty"},
+			{"label": _("Qty to Bill"), "fieldname": "qty_to_bill", "fieldtype": "Float", "width": 80, "convertible": "qty"},
 			{
 				"label": _("Amount"),
 				"fieldname": "amount",
@@ -383,10 +336,8 @@ def get_columns(filters):
 				"fieldname": "delay_in_days",
 				"fieldtype": "Int",
 				"width": 100,
-			}
-
+			},
 		]
 	)
 
 	return columns
-
