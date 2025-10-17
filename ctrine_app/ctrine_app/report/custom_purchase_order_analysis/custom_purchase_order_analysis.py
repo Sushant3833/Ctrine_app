@@ -49,8 +49,9 @@ def get_data(filters):
 		.on((pi_item.po_detail == po_item.name) & (pi_item.docstatus == 1))
 		.select(
 			po.transaction_date.as_("date"),
-			po_item.schedule_date.as_("required_date"),  # schedule_date -> required_date
-			po_item.custom_lead_date_no,  # ✅ added field
+			po_item.schedule_date.as_("required_date"),
+			po_item.custom_lead_date_no,
+			po_item.custom_transit_time_in_days,  # ✅ Added field
 			po_item.project,
 			po.name.as_("purchase_order"),
 			po.status,
@@ -234,7 +235,8 @@ def get_columns(filters):
 	columns = [
 		{"label": _("Date"), "fieldname": "date", "fieldtype": "Date", "width": 90},
 		{"label": _("Lead Date"), "fieldname": "required_date", "fieldtype": "Date", "width": 90},
-		{"label": _("Lead Date No"), "fieldname": "custom_lead_date_no", "fieldtype": "Data", "width": 100},  # ✅ added column
+		{"label": _("Lead Date No"), "fieldname": "custom_lead_date_no", "fieldtype": "Data", "width": 100},
+		{"label": _("Transit Time (Days)"), "fieldname": "custom_transit_time_in_days", "fieldtype": "Int", "width": 100},  # ✅ Added column here
 		{
 			"label": _("Purchase Order"),
 			"fieldname": "purchase_order",
